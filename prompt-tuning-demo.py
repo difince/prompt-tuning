@@ -2,8 +2,8 @@ import kfp
 import kfp.dsl as dsl
 from kfp.dsl import component
 from kfp.compiler import Compiler
-# from kfp.k8s_client_helper import env_from_secret
 from kubernetes import client, config
+
 
 # @component()
 # def download_data(
@@ -23,6 +23,10 @@ def prompt_tuning_bloom(peft_model_publish_id: str, model_name_or_path: str, num
     import os
     from torch.utils.data import DataLoader
     from tqdm import tqdm
+
+    import os
+    print("Diana : printin env variable")
+    print(os.environ.get('HUGGINGFACE_TOKEN'))
 
     peft_config = PromptTuningConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -69,7 +73,7 @@ def prompt_tuning_bloom(peft_model_publish_id: str, model_name_or_path: str, num
             sample_input_ids = model_inputs["input_ids"][i]
             label_input_ids = labels["input_ids"][i]
             model_inputs["input_ids"][i] = [tokenizer.pad_token_id] * (
-                max_length - len(sample_input_ids)
+                    max_length - len(sample_input_ids)
             ) + sample_input_ids
             model_inputs["attention_mask"][i] = [0] * (max_length - len(sample_input_ids)) + model_inputs[
                 "attention_mask"
@@ -93,11 +97,11 @@ def prompt_tuning_bloom(peft_model_publish_id: str, model_name_or_path: str, num
     train_dataset = processed_datasets["train"]
     eval_dataset = processed_datasets["train"]
 
-
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=batch_size, pin_memory=False
     )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=default_data_collator, batch_size=batch_size, pin_memory=False)
+    eval_dataloader = DataLoader(eval_dataset, collate_fn=default_data_collator, batch_size=batch_size,
+                                 pin_memory=False)
 
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     model = get_peft_model(model, peft_config)
@@ -133,14 +137,16 @@ def prompt_tuning_bloom(peft_model_publish_id: str, model_name_or_path: str, num
             loss = outputs.loss
             eval_loss += loss.detach().float()
             eval_preds.extend(
-                tokenizer.batch_decode(torch.argmax(outputs.logits, -1).detach().cpu().numpy(), skip_special_tokens=True)
+                tokenizer.batch_decode(torch.argmax(outputs.logits, -1).detach().cpu().numpy(),
+                                       skip_special_tokens=True)
             )
 
         eval_epoch_loss = eval_loss / len(eval_dataloader)
         eval_ppl = torch.exp(eval_epoch_loss)
         train_epoch_loss = total_loss / len(train_dataloader)
         train_ppl = torch.exp(train_epoch_loss)
-        print("epoch=%s: train_ppl=%s train_epoch_loss=%s eval_ppl=%s eval_epoch_loss=%s" % (epoch, train_ppl, train_epoch_loss, eval_ppl, eval_epoch_loss))
+        print("epoch=%s: train_ppl=%s train_epoch_loss=%s eval_ppl=%s eval_epoch_loss=%s" % (
+        epoch, train_ppl, train_epoch_loss, eval_ppl, eval_epoch_loss))
 
     from huggingface_hub import login
     token = os.environ.get("HUGGINGFACE_TOKEN")
@@ -149,6 +155,7 @@ def prompt_tuning_bloom(peft_model_publish_id: str, model_name_or_path: str, num
 
     peft_model_id = peft_model_publish_id
     model.push_to_hub(peft_model_id, use_auth_token=True)
+
 
 @component(
     packages_to_install=["transformers", "peft", "torch"],
@@ -176,6 +183,7 @@ def test_prompt_tuning_config(peft_model_id: str, model_name_or_path: str):
         )
         print(tokenizer.batch_decode(outputs.detach().cpu().numpy(), skip_special_tokens=True))
 
+
 # prompt_tuning_bloom_op = comp.func_to_container_op(prompt_tuning_bloom, packages_to_install=['peft', 'transformers', 'datasets'], base_image='python:3.10')
 # test_prompt_tuning_config_op = comp.func_to_container_op(test_prompt_tuning_config, packages_to_install=['peft', 'transformers'], base_image='python:3.10')
 
@@ -185,10 +193,10 @@ def test_prompt_tuning_config(peft_model_id: str, model_name_or_path: str):
     description="A Pipeline for Prompt Tuning LLMs"
 )
 def prompt_tuning_pipeline(
-    peft_model_publish_id: str ="difince/bloomz-560m_PROMPT_TUNING_CAUSAL_LM",
-    model_name_or_path: str ="bigscience/bloomz-560m",
-    num_epochs: int = 1,
-    test_prompt_tuning: str ="true"
+        peft_model_publish_id: str = "difince/bloomz-560m_PROMPT_TUNING_CAUSAL_LM",
+        model_name_or_path: str = "bigscience/bloomz-560m",
+        num_epochs: int = 1,
+        test_prompt_tuning: str = "true"
 ):
     print(kfp.__version__)
     prompt_tuning_llm = prompt_tuning_bloom(peft_model_publish_id=peft_model_publish_id,
@@ -196,23 +204,21 @@ def prompt_tuning_pipeline(
                                             num_epochs=num_epochs)
     # Read the secret containing the HUGGINGFACE_TOKEN
     config.load_kube_config(config_file="/home/dianaa/.kube/config")
-    coreApi = client.CoreV1Api()
-    secret = coreApi.read_namespaced_secret(name="huggingface-secret", namespace="kubeflow")
+    core_api = client.CoreV1Api()
+    secret = core_api.read_namespaced_secret(name="huggingface-secret", namespace="kubeflow")
     print(secret.data["token"])
 
     # prompt_tuning_llm.add_env_variable(env_from_secret('HUGGINGFACE_TOKEN', 'huggingface-secret', 'token'))
     # probably I need to decript base64 the secret?
-    prompt_tuning_llm.add_env_variable(secret.data["token"])
+    # prompt_tuning_llm.add_env_variable(secret.data["token"])
+    prompt_tuning_llm.set_env_variable("HUGGINGFACE_TOKEN", secret.data["token"])
     # with I.(test_prompt_tuning == 'true'):
     test_prompt_tuning = test_prompt_tuning_config(peft_model_id=peft_model_publish_id,
                                                    model_name_or_path=model_name_or_path)
-    # test_prompt_tuning.after(prompt_tuning_llm)
+    test_prompt_tuning.after(prompt_tuning_llm)
     # test_prompt_tuning.add_pod_label('pipelines.kubeflow.org/cache_enabled', 'false')
 
 
-
-
-#Compile the pipeline
+# Compile the pipeline
 # pipeline_func = prompt_tuning_pipeline
 Compiler().compile(prompt_tuning_pipeline, 'prompt_tuning_pipeline.yaml')
-
